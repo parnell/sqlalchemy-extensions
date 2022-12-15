@@ -4,9 +4,16 @@ from typing import List
 
 from sqlalchemy import ForeignKey, String, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlgold import DB
+from sqlgold.utils.test_db_utils import create_test_db, set_test_config
 
+from sqlalchemy_extensions import sessionmaker
 from sqlalchemy_extensions.orm import Base
-from sqlgold.utils._test_db_utils import create_test_db
+
+set_test_config("sqlalchemy-extensions")
+
+DB.default_base = Base
+DB.default_sessionmaker = sessionmaker
 
 
 class TParent(Base):

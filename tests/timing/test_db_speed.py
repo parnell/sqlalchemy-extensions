@@ -3,10 +3,17 @@ import unittest
 
 from sqlalchemy import String, select
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlgold import DB
+from sqlgold.utils.test_db_utils import create_test_db, set_test_config
 from utils.timer_utils import Timer
 
+from sqlalchemy_extensions import sessionmaker
 from sqlalchemy_extensions.orm import Base
-from sqlgold.utils._test_db_utils import create_test_db
+
+set_test_config("sqlalchemy-extensions")
+
+DB.default_base = Base
+DB.default_sessionmaker = sessionmaker
 
 
 class TClass(Base):

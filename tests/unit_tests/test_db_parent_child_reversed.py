@@ -4,10 +4,17 @@ from typing import List
 
 from sqlalchemy import ForeignKey, String, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlgold import DB
+from sqlgold.utils.test_db_utils import create_test_db, set_test_config
 
+from sqlalchemy_extensions import sessionmaker
 from sqlalchemy_extensions.orm import Base
-from sqlgold.utils._test_db_utils import create_test_db
 
+set_test_config("sqlalchemy-extensions")
+
+
+DB.default_base = Base
+DB.default_sessionmaker = sessionmaker
 
 
 class TChild(Base):
@@ -17,7 +24,10 @@ class TChild(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128), index=True, logical_key=True)
 
-    parent_id: Mapped[int] = mapped_column(ForeignKey("tparent_nb.id"), logical_key=True)
+    parent_id: Mapped[int] = mapped_column(
+        ForeignKey("tparent_nb.id"), logical_key=True
+    )
+
 
 class TParent(Base):
     __tablename__ = "tparent_nb"
@@ -27,7 +37,6 @@ class TParent(Base):
     name: Mapped[str] = mapped_column(String(128), index=True, logical_key=True)
 
     children: Mapped[List["TChild"]] = relationship()
-
 
 
 class TestPC_DBFuncs(unittest.TestCase):
