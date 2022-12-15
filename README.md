@@ -64,39 +64,3 @@ assert len(dbobjs) == 1
 
 For some full code examples see [examples](https://github.com/parnell/sqlalchemy-extensions/blob/main/examples)
 
-
-# Configuration 
-While you can pass in connection urls, or dictionaries with config variables, you can also set defaults using a `config.toml`, locations can be found in (#Creating the `config.toml` file)
-For help with creating initial users see the [DATABASE README](https://github.com/parnell/sqlalchemy-extensions/blob/main/README_DATABASE.md)
-
-## Creating the `config.toml` file
-This project uses default options loaded from a `.toml` file. This file is located in the system config directory that is different for every system. 
-
-It will check for the config.toml in the following locations in order.
-
-### Config locations
-These locations will be checked in order
-* ```~/.config/sqlalchemy-extensions/config.toml```
-* ```<config directory for user(system dependent)>/sqlalchemy-extensions/config.toml```
-
-
-
-
-```toml
-default="sqlite3" 
-
-[sqlite3]
-# sqlite3 settings
-url="sqlite:///:memory:"
-
-[mysql]
-# mysql settings
-url="mysql+pymysql://<username>:<password>@<host>/<database>?charset=utf8mb4"
-
-
-[logging]
-# Logging options 
-# level: set logging level Valid levels 
-#        "" for nothing, "debug", "info", "warn", "error", "critical" 
-level=""
-```
