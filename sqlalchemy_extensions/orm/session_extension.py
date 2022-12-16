@@ -5,7 +5,7 @@ from collections.abc import Iterable as CollectionsIterable
 from functools import partial
 from typing import Any, Iterable, List, Set, Tuple, Type, Union
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import DatabaseError, IntegrityError, NoResultFound
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql import tuple_
@@ -30,7 +30,7 @@ class SessionExtensions(Session):
     """Class that holds all of the extensions to the SQLAlchemy session class"""
 
     def count(self, cls):
-        return int(self.query(cls).count())
+        return self.scalar(select(func.count(*cls._key_columns)))
 
     def _commit_flush_refresh(
         self,
@@ -73,21 +73,16 @@ class SessionExtensions(Session):
         """
         if not objects:
             return objects
-        ## Get List of keys
-        # Example: allkeys= [('0', '0'), ('1', '1')]
-        allkeys = [x._key_vals for x in objects]
-        # allkeys = map(lambda x: x._key_vals, objects)
+    
         obj = next(iter(objects))
-        if classes_seen is None:
-            classes_seen = set()
-        classes_seen.add(obj.__class__)
 
         ## get ids that were in the database
-        db_ids_key_vals = (
-            self.query(*obj._key_columns)
-            .filter(tuple_(*obj._key_columns).in_(allkeys))
-            .all()
-        )
+        # Example: .in_([('0', '0'), ('1', '1')])
+        db_ids_key_vals = self.execute(
+            select(*obj._key_columns).filter(
+                tuple_(*obj._key_columns).in_([x._key_vals for x in objects])
+            )
+        ).all()
 
         ## get what objects were found and not found in db
         not_found_objs = [o for o in objects if o._key_vals not in db_ids_key_vals]
@@ -101,6 +96,9 @@ class SessionExtensions(Session):
         ## self.insert_ignore chosen on purpose as it will call
         ## insert_ignore_all if the objects are iterable
         if obj._rel_columns:
+            if classes_seen is None:
+                classes_seen = set()
+            classes_seen.add(obj.__class__)
             self._handle_relationships(
                 self.insert_ignore,
                 objects=objects,
@@ -140,9 +138,6 @@ class SessionExtensions(Session):
                 refresh=refresh,
                 classes_seen=classes_seen,
             )
-        if classes_seen is None:
-            classes_seen = set()
-        classes_seen.add(obj.__class__)
         stmt = select(obj.__class__).where(*_eq_filter(obj._key_columns, obj._key_vals))
         try:
             return self.scalars(stmt).one_or_none()
@@ -153,6 +148,9 @@ class SessionExtensions(Session):
         if commit or flush or refresh:
             self._commit_flush_refresh(commit, flush, refresh, obj)
         if obj._rel_columns:
+            if classes_seen is None:
+                classes_seen = set()
+            classes_seen.add(obj.__class__)
             self._handle_relationships(
                 self.insert_ignore,
                 objects=[obj],
@@ -164,9 +162,11 @@ class SessionExtensions(Session):
         return obj
 
     def find_keys(
-        self, obj_class: Type[DeclarativeBase], logical_values: Union[Any, List[Any]]
+        self,
+        obj_class: Type[DeclarativeBase],
+        logical_values: Union[Any, Iterable[Any]],
     ) -> Tuple[Any]:
-        """Query to see if the object is in the db
+        """Query to get the primary key values from the logical key values
 
         Args:
             obj_class (Type[DeclarativeBase]): valid class
@@ -183,13 +183,13 @@ class SessionExtensions(Session):
                 f"Error! No logical_key columns were specified for class '{obj_class}'"
             )
         try:
-            stmt = self.query(*obj_class._key_columns).where(
+            stmt = select(*obj_class._key_columns).where(
                 *_eq_filter(obj_class._log_columns, logical_values)
             )
-            v = stmt.one_or_none()
+            v = self.execute(stmt).one_or_none()
             return v[0] if v is not None and len(v) == 1 else v
-        except:
-            logging.error(
+        except Exception as e:
+            e.add_note(
                 f"stmt={stmt}\nobj._log_columns={obj_class._log_columns}, "
                 f"obj._log_vals={logical_values}"
             )
@@ -278,28 +278,19 @@ class SessionExtensions(Session):
         if not objects:
             return objects
 
-        ## Get List of keys
-        allkeys = [
-            x._log_vals for x in objects
-        ]  # Example: allkeys= [('0', '0'), ('1', '1')]
         obj = next(iter(objects))
-        if classes_seen is None:
-            classes_seen = set()
-        classes_seen.add(obj.__class__)
-
         if not obj._log_columns:
             raise Exception(
                 f"Error! No logical_key columns were specified for class '{obj.__class__}'"
             )
-        key_columns = obj._key_columns
-        logkey_columns = obj._log_columns
-        nkeys = len(key_columns)
         ## get ids that were in the database
-        db_ids_log_vals = (
-            self.query(*key_columns, *logkey_columns)
-            .filter(tuple_(*logkey_columns).in_(allkeys))
-            .all()
+        # Example: in_([('0', '0'), ('1', '1')])
+        stmt = select(*obj._key_columns, *obj._log_columns).filter(
+            tuple_(*obj._log_columns).in_([x._log_vals for x in objects])
         )
+        db_ids_log_vals = self.execute(stmt).all()
+
+        nkeys = len(obj._key_columns)
         logvals_to_keyvals = {tuple(x[nkeys:]): x[:nkeys] for x in db_ids_log_vals}
 
         ## get what objects were found and not found in db
@@ -321,6 +312,9 @@ class SessionExtensions(Session):
         ## self.linsert_ignore is passed on purpose as it calls
         ##   linsert_ignore_all if it is a collection
         if obj._rel_columns:
+            if classes_seen is None:
+                classes_seen = set()
+            classes_seen.add(obj.__class__)
             self._handle_relationships(
                 self.linsert_ignore,
                 objects=objects,
@@ -363,9 +357,6 @@ class SessionExtensions(Session):
             raise Exception(
                 f"Error! No logical_key columns were specified for class '{obj.__class__}'"
             )
-        if classes_seen is None:
-            classes_seen = set()
-        classes_seen.add(obj.__class__)
         stmt = select(obj.__class__).where(*_eq_filter(obj._log_columns, obj._log_vals))
         try:
             return self.scalars(stmt).one()
@@ -375,6 +366,9 @@ class SessionExtensions(Session):
         self._commit_flush_refresh(commit, flush, refresh, obj)
         ## Handle Relationships
         if obj._rel_columns:
+            if classes_seen is None:
+                classes_seen = set()
+            classes_seen.add(obj.__class__)
             self._handle_relationships(
                 self.linsert_ignore,
                 objects=[obj],
@@ -395,7 +389,7 @@ class SessionExtensions(Session):
             obj (DeclarativeBase): valid db obj
 
         Returns:
-            Any or None: id of the object or None
+            Any or None: id/ids (primary key/s values) of the object or None
         """
         return self.find_keys(obj, obj._log_vals)
 
