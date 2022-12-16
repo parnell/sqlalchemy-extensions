@@ -30,7 +30,7 @@ class SessionExtensions(Session):
     """Class that holds all of the extensions to the SQLAlchemy session class"""
 
     def count(self, cls):
-        return self.scalar(select(func.count(*cls._key_columns)))
+        return self.scalar(select(func.count()).select_from(cls))
 
     def _commit_flush_refresh(
         self,
@@ -73,7 +73,7 @@ class SessionExtensions(Session):
         """
         if not objects:
             return objects
-    
+
         obj = next(iter(objects))
 
         ## get ids that were in the database
