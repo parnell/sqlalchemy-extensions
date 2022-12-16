@@ -29,7 +29,15 @@ def _eq_filter(l1: List, l2: List) -> List[bool]:
 class SessionExtensions(Session):
     """Class that holds all of the extensions to the SQLAlchemy session class"""
 
-    def count(self, cls):
+    def count(self, cls: Type[DeclarativeBase]) -> int:
+        """ Return the number of rows for the given class
+
+        Args:
+            cls (Type[DeclarativeBase]): The class to retrieve the count for
+
+        Returns:
+            int: an integer with the number of rows in the class
+        """
         return self.scalar(select(func.count()).select_from(cls))
 
     def _commit_flush_refresh(
