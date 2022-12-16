@@ -1,7 +1,7 @@
 import statistics
 import timeit
 import uuid
-from sqlalchemy_extensions import create_db
+from sqlgold import create_db
 
 number = 2
 repeat = 20
@@ -10,9 +10,14 @@ setup = """
 size = {size}
 
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy_extensions import Base, Session, DB, create_db
+from sqlalchemy_extensions import Base, Session, sessionmaker
+from sqlgold import DB, create_db
 import warnings
 from sqlalchemy import exc as sa_exc
+
+DB.default_base = Base
+DB.default_sessionmaker = sessionmaker
+
 
 class TClass{ext}(Base):
     __tablename__ = "tclass_{ext}"
@@ -80,14 +85,6 @@ with db.Session() as s:
     s.commit()
 """
 run(stmt, "insert_ignore")
-
-stmt = """
-with db.Session() as s:
-    for o in [dict(id{ext}=i, name{ext}=i) for i in range(size)]:
-        s.get_or_create(TClass{ext}, o)
-    s.commit()
-"""
-run(stmt, "get_or_create")
 
 
 create_db().drop_db()
