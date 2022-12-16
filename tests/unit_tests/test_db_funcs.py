@@ -73,6 +73,15 @@ class TestDBFuncs(unittest.TestCase):
                 robj = s.lget(TClass, "NotFound")
                 self.assertIsNone(robj)
 
+    def test_count(self):
+        size = 2
+        with create_test_db() as db:
+            with db.Session() as s:
+                os = [TClass(name=str(x)) for x in range(size)]
+                s.add_all(os)
+                s.commit()
+                self.assertEqual(s.count(TClass), size)
+
 
 if __name__ == "__main__":
     unittest.main()
