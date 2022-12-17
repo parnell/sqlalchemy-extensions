@@ -30,7 +30,7 @@ class SessionExtensions(Session):
     """Class that holds all of the extensions to the SQLAlchemy session class"""
 
     def count(self, cls: Type[DeclarativeBase]) -> int:
-        """ Return the number of rows for the given class
+        """Return the number of rows for the given class
 
         Args:
             cls (Type[DeclarativeBase]): The class to retrieve the count for
@@ -121,6 +121,7 @@ class SessionExtensions(Session):
     def insert_ignore(
         self,
         obj: Union[DeclarativeBase, Iterable[DeclarativeBase]],
+        _warn: bool = True,
         commit: bool = False,
         flush: bool = False,
         refresh: bool = False,
@@ -152,7 +153,7 @@ class SessionExtensions(Session):
         except NoResultFound:
             pass
 
-        self.add(obj)
+        self.add(obj, _warn=_warn)
         if commit or flush or refresh:
             self._commit_flush_refresh(commit, flush, refresh, obj)
         if obj._rel_columns:
@@ -336,6 +337,7 @@ class SessionExtensions(Session):
     def linsert_ignore(
         self,
         obj: Union[DeclarativeBase, Iterable[DeclarativeBase]],
+        _warn: bool = False,
         commit: bool = False,
         flush: bool = False,
         refresh: bool = False,
@@ -370,7 +372,7 @@ class SessionExtensions(Session):
             return self.scalars(stmt).one()
         except NoResultFound:
             pass
-        self.add(obj)
+        self.add(obj, _warn=_warn)
         self._commit_flush_refresh(commit, flush, refresh, obj)
         ## Handle Relationships
         if obj._rel_columns:
@@ -419,10 +421,11 @@ class SessionExtensions(Session):
                 f"Error! No logical_key columns were specified for class '{obj_class}'"
             )
         stmt = select(obj_class).where(*_eq_filter(obj_class._log_columns, values))
+        # print(stmt)
         try:
             return self.scalars(stmt).one_or_none()
-        except:
-            logging.error(
+        except Exception as e:
+            e.add_note(
                 f"stmt={stmt}\nobj._log_columns={obj_class._log_columns}, "
                 f"obj._log_vals={values}, "
             )
