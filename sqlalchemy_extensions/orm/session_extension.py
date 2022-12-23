@@ -1,18 +1,16 @@
 """Module for all of the extensions to the SQLAlchemy session class """
-import itertools
-import logging
-from collections import OrderedDict
 from collections.abc import Iterable as CollectionsIterable
 from collections.abc import Sequence
 from functools import partial
 from typing import Any, Iterable, List, Optional, Set, Tuple, Type, Union
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import DatabaseError, IntegrityError, NoResultFound
+from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.orm.interfaces import ORMOption
 from sqlalchemy.sql import tuple_
 
+from sqlalchemy_extensions import NoLogicalKeyException
 from sqlalchemy_extensions.orm.decl_base import DeclarativeBase, Registry
 
 
@@ -34,7 +32,7 @@ class SessionExtensions(Session):
 
     def attach_keys(
         self, obj: Type[DeclarativeBase], allow_id_overwrite: bool = False
-    ) -> DeclarativeBase:
+    ) -> bool:
         """Attach primary key values to the object based on their logical key attributes
 
         Args:
@@ -45,15 +43,14 @@ class SessionExtensions(Session):
             Exception: _description_
 
         Returns:
-            DeclarativeBase: _description_
+            Tuple[DeclarativeBase, bool]: _description_
         """
         if not obj._log_columns:
-            raise Exception(
-                f"Error! No logical_key columns were specified for class '{obj.__class__}'"
-            )
+            raise NoLogicalKeyException(obj.__class__)
         oids = self.find_keys(obj.__class__, obj._log_vals)
         if not isinstance(oids, Sequence):
             oids = [oids]
+        attached_key = False
         for col, value in zip(obj._key_columns, oids):
             if not allow_id_overwrite:
                 v = getattr(obj, col.name)
@@ -61,35 +58,42 @@ class SessionExtensions(Session):
                     raise Exception(
                         f"Error! attach_keys received an object that already has ids {obj}"
                     )
-            setattr(obj, col.name, value)
+            if value is not None:
+                if not attached_key:
+                    attached_key = True
+                setattr(obj, col.name, value)
+        return (obj, attached_key)
 
     def attach_keys_all(
         self, objects: Iterable[Type[DeclarativeBase]], allow_id_overwrite: bool = False
-    ) -> Iterable[DeclarativeBase]:
+    ) -> List[bool]:
         """Attach primary key values to the object based on their logical key attributes
 
         Args:
-            obj (Type[DeclarativeBase]): _description_
+            objects (Iterable[Type[DeclarativeBase]]): _description_
             allow_id_overwrite (bool, optional): _description_. Defaults to False.
 
-        Raises:
-            Exception: _description_
-
         Returns:
-            DeclarativeBase: _description_
+            Tuple[Iterable[DeclarativeBase], Iterable[bool]]: _description_
         """
+
         obj = next(iter(objects))
         if not obj._log_columns:
-            raise Exception(
-                f"Error! No logical_key columns were specified for class '{obj.__class__}'"
-            )
-        log_vals = [o._log_vals for o in objects]
-        oids = self.find_keys_all(obj.__class__, log_vals)
-        for oids, obj in zip(oids.values(), objects):
+            raise NoLogicalKeyException(obj.__class__)
+        oids = self.find_keys_all(obj.__class__, [o._log_vals for o in objects])
+        attached_key_list = []
+        for oids, obj in zip(oids, objects):
+            attached_key = False # have we attached a key?
+            if oids is None:
+                attached_key_list.append(attached_key)
+                continue
             for col, oid in zip(obj._key_columns, oids):
                 if oid is not None:
+                    if not attached_key:
+                        attached_key = True
                     setattr(obj, col.name, oid)
-        return objects
+            attached_key_list.append(attached_key)
+        return attached_key_list
 
     def count(self, cls: Type[DeclarativeBase]) -> int:
         """Return the number of rows for the given class
@@ -138,9 +142,7 @@ class SessionExtensions(Session):
         if not isinstance(logical_values, Sequence):
             logical_values = [logical_values]
         if not obj_class._log_columns:
-            raise Exception(
-                f"Error! No logical_key columns were specified for class '{obj_class}'"
-            )
+            raise NoLogicalKeyException(obj_class)
         try:
             stmt = select(*obj_class._key_columns).where(
                 tuple_(*obj_class._log_columns).in_([logical_values])
@@ -170,9 +172,7 @@ class SessionExtensions(Session):
         """
 
         if not obj_class._log_columns:
-            raise Exception(
-                f"Error! No logical_key columns were specified for class '{obj_class}'"
-            )
+            raise NoLogicalKeyException(obj_class)
 
         stmt = select(*obj_class._key_columns, *obj_class._log_columns).filter(
             tuple_(*obj_class._log_columns).in_(logical_values)
@@ -183,10 +183,7 @@ class SessionExtensions(Session):
         logvals_to_keyvals = {tuple(x[nkeys:]): x[:nkeys] for x in db_ids_log_vals}
 
         ## get what objects were found and not found in db
-        logical_values_to_ids = OrderedDict()
-        for lv in logical_values:
-            logical_values_to_ids[lv] = logvals_to_keyvals.get(lv, None)
-        return logical_values_to_ids
+        return [logvals_to_keyvals.get(lv, None) for lv in logical_values]
 
     def _handle_relationships(
         self,
@@ -387,9 +384,7 @@ class SessionExtensions(Session):
         if not isinstance(values, CollectionsIterable):
             values = [values]
         if not obj_class._log_columns:
-            raise Exception(
-                f"Error! No logical_key columns were specified for class '{obj_class}'"
-            )
+            raise NoLogicalKeyException(obj_class)
         stmt = select(obj_class).where(*_eq_filter(obj_class._log_columns, values))
         try:
             return self.scalars(stmt).one_or_none()
@@ -426,9 +421,7 @@ class SessionExtensions(Session):
 
         obj = next(iter(objects))
         if not obj._log_columns:
-            raise Exception(
-                f"Error! No logical_key columns were specified for class '{obj.__class__}'"
-            )
+            raise NoLogicalKeyException(obj.__class__)
         ## get ids that were in the database
         # Example: in_([('0', '0'), ('1', '1')])
         stmt = select(*obj._key_columns, *obj._log_columns).filter(
@@ -501,9 +494,7 @@ class SessionExtensions(Session):
                 classes_seen=classes_seen,
             )
         if not obj._log_columns:
-            raise Exception(
-                f"Error! No logical_key columns were specified for class '{obj.__class__}'"
-            )
+            raise NoLogicalKeyException(obj.__class__)
         stmt = select(obj.__class__).where(*_eq_filter(obj._log_columns, obj._log_vals))
         try:
             return self.scalars(stmt).one()
@@ -531,13 +522,20 @@ class SessionExtensions(Session):
         obj: Union[DeclarativeBase, Iterable[DeclarativeBase]],
         load: bool = True,
         options: Optional[Sequence[ORMOption]] = None,
+        _warn: bool = False,
         commit: bool = False,
         flush: bool = False,
         refresh: bool = False,
     ):
         if any(key is None for key in obj._key_vals):
-            self.attach_keys(obj)
-        self.merge(obj, load=load, options=options)
+            attached_key = self.attach_keys(obj)
+            if attached_key:
+                self.merge(obj, load=load, options=options)
+            else:
+                self.add(obj, _warn=_warn)
+        else:
+            self.merge(obj, load=load, options=options)
+
         if commit or flush or refresh:
             self._commit_flush_refresh(commit, flush, refresh)
         return obj
@@ -551,14 +549,16 @@ class SessionExtensions(Session):
         flush: bool = False,
         refresh: bool = False,
     ):
-        pass
-        # if any(key is None for key in obj._key_vals):
-        #     self.attach_keys(obj)
-        # self.merge(obj, load=load, options=options)
-        # if commit or flush or refresh:
-        #     self._commit_flush_refresh(commit, flush, refresh)
-        # return obj
+        attached_list = self.attach_keys_all(objs)
+        for obj, attached_key in zip(objs, attached_list):
+            if attached_key:
+                self.merge(obj, load=load, options=options)
+            else:
+                self.add(obj)
 
+        if commit or flush or refresh:
+            self._commit_flush_refresh(commit, flush, refresh)
+        return obj
 
 class extended_sessionmaker(sessionmaker):
     """Class to create an extended Session"""
@@ -586,6 +586,7 @@ class extended_sessionmaker(sessionmaker):
         session.linsert_ignore = partial(SessionExtensions.linsert_ignore, session)
         session.linsert_ignore_all = partial(SessionExtensions.linsert_ignore_all, session)
         session.linsert_update = partial(SessionExtensions.linsert_update, session)
+        session.linsert_update_all = partial(SessionExtensions.linsert_update_all, session)
         session._handle_relationships = partial(SessionExtensions._handle_relationships, session)
         session._commit_flush_refresh = partial(SessionExtensions._commit_flush_refresh, session)
         # fmt: on

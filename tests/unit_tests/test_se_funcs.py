@@ -51,16 +51,89 @@ class DClass(Base):
 
 
 class TestDBFuncs(unittest.TestCase):
-    def test_linsert_update(self):
+    def test_linsert_update_insert(self):
         with create_test_db() as db:
             with db.Session() as s:
                 o = TClassOther(name="1", other="1")
                 s.add(o)
                 s.commit()
-                o = TClassOther(name="1", other="2")
+                o = TClassOther(name="2", other="2")
                 s.linsert_update(o)
-                o2 = s.get(TClassOther, 1)
-                self.assertEqual(o.other, o2.other)
+                s.commit()
+                o2 = s.get(TClassOther, 2)
+                self.assertEqual(o2.id, 2)
+                self.assertEqual(o2.other, "2")
+
+    def test_linsert_update_update(self):
+        with create_test_db() as db:
+            with db.Session() as s:
+                o = TClassOther(name="1", other="1")
+                s.add(o)
+                s.commit()
+                o2 = TClassOther(name="1", other="2")
+                s.linsert_update(o2)
+                dbo = s.get(TClassOther, 1)
+                self.assertEqual(o.id, o2.id)
+                self.assertEqual(dbo.id, o2.id)
+                self.assertEqual(dbo.other, o2.other)
+
+    def test_linsert_update_all_insert(self):
+        size = 2
+        with create_test_db() as db:
+            with db.Session() as s:
+                os = [TClassOther(name=str(i), other=str(i)) for i in range(size)]
+                s.add_all(os)
+                s.commit()
+                os2 = [
+                    TClassOther(name=str(i), other=str(i))
+                    for i in range(size, size + size)
+                ]
+                s.linsert_update_all(os2)
+                s.commit()
+                count = s.count(TClassOther)
+                self.assertEqual(count, size + size)
+
+    def test_linsert_update_all_update(self):
+        size = 2
+        with create_test_db() as db:
+            with db.Session() as s:
+                os = [TClassOther(name=str(i), other=str(i)) for i in range(size)]
+                s.add_all(os)
+                s.commit()
+                os2 = [
+                    TClassOther(name=str(i), other=str(i + size)) for i in range(size)
+                ]
+                s.linsert_update_all(os2)
+                count = s.count(TClassOther)
+                self.assertEqual(count, size)
+                dbos = [s.get(TClassOther, i + 1) for i in range(size)]
+                for i, dbo in enumerate(dbos):
+                    self.assertEqual(dbo.id, i + 1)
+                    self.assertEqual(dbo.name, str(i))
+                    self.assertEqual(dbo.other, str(i + size))
+
+    def test_linsert_update_all_mix(self):
+        size = 2
+        with create_test_db() as db:
+            with db.Session() as s:
+                os = [TClassOther(name=str(i), other=str(i)) for i in range(size)]
+                s.add_all(os)
+                s.commit()
+                os2 = [
+                    TClassOther(name=str(i), other=str(i + size))
+                    for i in range(1, size + 1)
+                ]
+                s.linsert_update_all(os2)
+                count = s.count(TClassOther)
+                self.assertEqual(count, size + 1)
+                dbos = [s.get(TClassOther, i + 1) for i in range(size + 1)]
+                for i, dbo in enumerate(dbos):
+                    self.assertEqual(dbo.id, i + 1)
+                    self.assertEqual(dbo.name, str(i))
+                    if i >= 1:
+                        self.assertEqual(dbo.other, str(i + size))
+                    else:
+                        self.assertEqual(dbo.other, str(i))
 
     def test_attach_keys(self):
         with create_test_db() as db:
@@ -95,9 +168,8 @@ class TestDBFuncs(unittest.TestCase):
                 s.add_all(os)
                 s.commit()
                 ids = s.find_keys_all(TClass, lids)
-                vals = list(ids.values())
-                self.assertEqual(vals[0][0], 1)
-                self.assertEqual(vals[1][0], 2)
+                self.assertEqual(ids[0][0], 1)
+                self.assertEqual(ids[1][0], 2)
 
     def test_find_keys_single(self):
         name = "1"
