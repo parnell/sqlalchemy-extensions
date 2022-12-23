@@ -133,19 +133,19 @@ class DeclarativeBase:
         return tuple([getattr(self, k.name) for k in self._key_columns])
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> Self:
+    def from_dict(cls, values_dict: Dict[str, Any]) -> Self:
         """Create an object from a dict of variables and values
 
         Args:
-            d (Dict[str, Any]): dict of variables and values
+            values_dict (Dict[str, Any]): dict of variables and values
 
         Returns:
             DeclarativeBase: obj created from dict
         """
-        c = cls()
-        for k, v in d.items():
-            setattr(c, k, v)
-        return c
+        instance = cls()
+        for k, v in values_dict.items():
+            setattr(instance, k, v)
+        return instance
 
     def __repr__(self):
         cols = [*self._key_columns, *self._log_columns]
@@ -160,7 +160,7 @@ class DeclarativeBase:
             if not callable(getattr(self.__class__, var)) and not var.startswith("_")
         ]
         ## ex <class 'tests.models.models.TClass'>
-        clsname = str(self.__class__).split(".")[-1][:-2]
+        clsname = self.__class__.__name__.split(".")[-1]
         return f"{clsname}({','.join(l)})"
 
 
