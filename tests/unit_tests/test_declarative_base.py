@@ -52,7 +52,7 @@ class TestDeclarativeBase(unittest.TestCase):
 
     def test_repr(self):
         o = TClass(name="1")
-        self.assertTrue("TClass" in str(o))
+        self.assertEqual(str(o)[:6], "TClass")
         self.assertTrue("id=None" in str(o))
         self.assertTrue("name=1" in str(o))
 
