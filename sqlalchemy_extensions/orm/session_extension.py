@@ -1,13 +1,16 @@
 """Module for all of the extensions to the SQLAlchemy session class """
 import itertools
 import logging
+from collections import OrderedDict
 from collections.abc import Iterable as CollectionsIterable
+from collections.abc import Sequence
 from functools import partial
-from typing import Any, Iterable, List, Set, Tuple, Type, Union
+from typing import Any, Iterable, List, Optional, Set, Tuple, Type, Union
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import DatabaseError, IntegrityError, NoResultFound
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm.interfaces import ORMOption
 from sqlalchemy.sql import tuple_
 
 from sqlalchemy_extensions.orm.decl_base import DeclarativeBase, Registry
@@ -28,6 +31,65 @@ def _eq_filter(l1: List, l2: List) -> List[bool]:
 
 class SessionExtensions(Session):
     """Class that holds all of the extensions to the SQLAlchemy session class"""
+
+    def attach_keys(
+        self, obj: Type[DeclarativeBase], allow_id_overwrite: bool = False
+    ) -> DeclarativeBase:
+        """Attach primary key values to the object based on their logical key attributes
+
+        Args:
+            obj (Type[DeclarativeBase]): _description_
+            allow_id_overwrite (bool, optional): _description_. Defaults to False.
+
+        Raises:
+            Exception: _description_
+
+        Returns:
+            DeclarativeBase: _description_
+        """
+        if not obj._log_columns:
+            raise Exception(
+                f"Error! No logical_key columns were specified for class '{obj.__class__}'"
+            )
+        oids = self.find_keys(obj.__class__, obj._log_vals)
+        if not isinstance(oids, Sequence):
+            oids = [oids]
+        for col, value in zip(obj._key_columns, oids):
+            if not allow_id_overwrite:
+                v = getattr(obj, col.name)
+                if v is not None:
+                    raise Exception(
+                        f"Error! attach_keys received an object that already has ids {obj}"
+                    )
+            setattr(obj, col.name, value)
+
+    def attach_keys_all(
+        self, objects: Iterable[Type[DeclarativeBase]], allow_id_overwrite: bool = False
+    ) -> Iterable[DeclarativeBase]:
+        """Attach primary key values to the object based on their logical key attributes
+
+        Args:
+            obj (Type[DeclarativeBase]): _description_
+            allow_id_overwrite (bool, optional): _description_. Defaults to False.
+
+        Raises:
+            Exception: _description_
+
+        Returns:
+            DeclarativeBase: _description_
+        """
+        obj = next(iter(objects))
+        if not obj._log_columns:
+            raise Exception(
+                f"Error! No logical_key columns were specified for class '{obj.__class__}'"
+            )
+        log_vals = [o._log_vals for o in objects]
+        oids = self.find_keys_all(obj.__class__, log_vals)
+        for oids, obj in zip(oids.values(), objects):
+            for col, oid in zip(obj._key_columns, oids):
+                if oid is not None:
+                    setattr(obj, col.name, oid)
+        return objects
 
     def count(self, cls: Type[DeclarativeBase]) -> int:
         """Return the number of rows for the given class
@@ -57,6 +119,133 @@ class SessionExtensions(Session):
                     self.refresh(o)
             else:
                 self.refresh(instances)
+
+    def find_keys(
+        self,
+        obj_class: Type[DeclarativeBase],
+        logical_values: Union[Any, Iterable[Any]],
+    ) -> Union[Any, Tuple[Any]]:
+        """Query to get the primary key values from the logical key values
+
+        Args:
+            obj_class (Type[DeclarativeBase]): valid class
+            logical_keys (Union[Any, List[Any]]): logical keys
+
+        Returns:
+            Union[Any, Tuple[Any]]: primary key/s or None
+        """
+
+        if not isinstance(logical_values, Sequence):
+            logical_values = [logical_values]
+        if not obj_class._log_columns:
+            raise Exception(
+                f"Error! No logical_key columns were specified for class '{obj_class}'"
+            )
+        try:
+            stmt = select(*obj_class._key_columns).where(
+                tuple_(*obj_class._log_columns).in_([logical_values])
+            )
+            v = self.execute(stmt).one_or_none()
+            return v[0] if v is not None and len(v) == 1 else v
+        except Exception as e:
+            e.add_note(
+                f"stmt={stmt}\nobj._log_columns={obj_class._log_columns}, "
+                f"obj._log_vals={logical_values}"
+            )
+            raise
+
+    def find_keys_all(
+        self,
+        obj_class: Type[DeclarativeBase],
+        logical_values: Iterable[Union[Any, Iterable[Any]]],
+    ) -> List[Tuple[Any]]:
+        """Query to get the primary key values from the logical key values
+
+        Args:
+            obj_class (Type[DeclarativeBase]): valid class
+            logical_keys (Union[Any, List[Any]]): logical keys
+
+        Returns:
+            Tuple[Any]: primary keys or None
+        """
+
+        if not obj_class._log_columns:
+            raise Exception(
+                f"Error! No logical_key columns were specified for class '{obj_class}'"
+            )
+
+        stmt = select(*obj_class._key_columns, *obj_class._log_columns).filter(
+            tuple_(*obj_class._log_columns).in_(logical_values)
+        )
+        db_ids_log_vals = self.execute(stmt).all()
+
+        nkeys = len(obj_class._key_columns)
+        logvals_to_keyvals = {tuple(x[nkeys:]): x[:nkeys] for x in db_ids_log_vals}
+
+        ## get what objects were found and not found in db
+        logical_values_to_ids = OrderedDict()
+        for lv in logical_values:
+            logical_values_to_ids[lv] = logvals_to_keyvals.get(lv, None)
+        return logical_values_to_ids
+
+    def _handle_relationships(
+        self,
+        insert_func: Any,
+        objects: Iterable[DeclarativeBase],
+        commit: bool,
+        flush: bool,
+        refresh: bool,
+        classes_seen: Set[Type[DeclarativeBase]] = None,
+    ):
+        """Find any relationships, i.e. child classes, that should also have
+        the insert_func called for them. Update the child class values as appropriate
+
+        Args:
+            insert_func (Any): insert function to call for relationship objects
+            objects (Iterable[DeclarativeBase]): objects with potential relationships
+            commit (bool): pass to insert_func
+            flush (bool): pass to insert_func
+            refresh (bool): pass to insert_func
+            classes_seen (Set[DeclarativeBase]): set of already seen classes to avoid
+                adding already handled classes
+        """
+        obj = next(iter(objects))
+
+        for rcol_str, rcol in obj._rel_columns.items():
+            toinsertobjects = []
+            rclass = rcol.mapper.class_manager.class_
+            ### we assume that previous classes handled the relationship
+            if rclass in classes_seen:
+                continue
+            classes_seen.add(rclass)
+            for parentobj in objects:
+                instance_or_list = getattr(parentobj, rcol_str)
+                if not instance_or_list:
+                    continue
+                if not isinstance(instance_or_list, CollectionsIterable):
+                    instance_or_list = [instance_or_list]
+                ### I have my column of children to update
+                ### Now I need the child class, and all of the child columns to update
+                fk_relationships = Registry.get_relationships(
+                    parentobj.__tablename__, next(iter(instance_or_list)).__class__
+                )
+                childcol_parentvalues = [
+                    (r.end_col, getattr(parentobj, r.start_col))
+                    for r in fk_relationships
+                ]
+                # Set the parent value to all the objects
+                for childobj in instance_or_list:
+                    for childcol, parentvalue in childcol_parentvalues:
+                        setattr(childobj, childcol, parentvalue)
+                toinsertobjects.extend(instance_or_list)
+
+            insert_func(
+                toinsertobjects,
+                commit=commit,
+                flush=flush,
+                refresh=refresh,
+                classes_seen=classes_seen,
+            )
 
     def insert_ignore_all(
         self,
@@ -170,98 +359,46 @@ class SessionExtensions(Session):
             )
         return obj
 
-    def find_keys(
+    def lexists(
         self,
-        obj_class: Type[DeclarativeBase],
-        logical_values: Union[Any, Iterable[Any]],
-    ) -> Tuple[Any]:
-        """Query to get the primary key values from the logical key values
+        obj: DeclarativeBase,
+    ) -> Any:
+        """Query to see if the object is in the db
 
         Args:
-            obj_class (Type[DeclarativeBase]): valid class
-            logical_keys (Union[Any, List[Any]]): logical keys
+            obj (DeclarativeBase): valid db obj
 
         Returns:
-            Tuple[Any]: primary keys or None
+            Any or None: id/ids (primary key/s values) of the object or None
         """
+        return self.find_keys(obj, obj._log_vals)
 
-        if not isinstance(logical_values, CollectionsIterable):
-            logical_values = tuple(logical_values)
+    def lget(
+        self, obj_class: Type[DeclarativeBase], values: Union[Any, Iterable[Any]]
+    ) -> DeclarativeBase:
+        """Query to see if the object is in the db based on the logical keys
+
+        Args:
+            obj (Type[DeclarativeBase]): valid db obj
+
+        Returns:
+            DeclarativeBase Instance or None: The object with the given keys or None
+        """
+        if not isinstance(values, CollectionsIterable):
+            values = [values]
         if not obj_class._log_columns:
             raise Exception(
                 f"Error! No logical_key columns were specified for class '{obj_class}'"
             )
+        stmt = select(obj_class).where(*_eq_filter(obj_class._log_columns, values))
         try:
-            stmt = select(*obj_class._key_columns).where(
-                *_eq_filter(obj_class._log_columns, logical_values)
-            )
-            v = self.execute(stmt).one_or_none()
-            return v[0] if v is not None and len(v) == 1 else v
+            return self.scalars(stmt).one_or_none()
         except Exception as e:
             e.add_note(
                 f"stmt={stmt}\nobj._log_columns={obj_class._log_columns}, "
-                f"obj._log_vals={logical_values}"
+                f"obj._log_vals={values}, "
             )
             raise
-
-    def _handle_relationships(
-        self,
-        insert_func: Any,
-        objects: Iterable[DeclarativeBase],
-        commit: bool,
-        flush: bool,
-        refresh: bool,
-        classes_seen: Set[Type[DeclarativeBase]] = None,
-    ):
-        """Find any relationships, i.e. child classes, that should also have
-        the insert_func called for them. Update the child class values as appropriate
-
-        Args:
-            insert_func (Any): insert function to call for relationship objects
-            objects (Iterable[DeclarativeBase]): objects with potential relationships
-            commit (bool): pass to insert_func
-            flush (bool): pass to insert_func
-            refresh (bool): pass to insert_func
-            classes_seen (Set[DeclarativeBase]): set of already seen classes to avoid
-                adding already handled classes
-        """
-        obj = next(iter(objects))
-
-        for rcol_str, rcol in obj._rel_columns.items():
-            toinsertobjects = []
-            rclass = rcol.mapper.class_manager.class_
-            ### we assume that previous classes handled the relationship
-            if rclass in classes_seen:
-                continue
-            classes_seen.add(rclass)
-            for parentobj in objects:
-                instance_or_list = getattr(parentobj, rcol_str)
-                if not instance_or_list:
-                    continue
-                if not isinstance(instance_or_list, CollectionsIterable):
-                    instance_or_list = [instance_or_list]
-                ### I have my column of children to update
-                ### Now I need the child class, and all of the child columns to update
-                fk_relationships = Registry.get_relationships(
-                    parentobj.__tablename__, next(iter(instance_or_list)).__class__
-                )
-                childcol_parentvalues = [
-                    (r.end_col, getattr(parentobj, r.start_col))
-                    for r in fk_relationships
-                ]
-                # Set the parent value to all the objects
-                for childobj in instance_or_list:
-                    for childcol, parentvalue in childcol_parentvalues:
-                        setattr(childobj, childcol, parentvalue)
-                toinsertobjects.extend(instance_or_list)
-
-            insert_func(
-                toinsertobjects,
-                commit=commit,
-                flush=flush,
-                refresh=refresh,
-                classes_seen=classes_seen,
-            )
 
     def linsert_ignore_all(
         self,
@@ -389,47 +526,38 @@ class SessionExtensions(Session):
             )
         return obj
 
-    def lexists(
+    def linsert_update(
         self,
-        obj: DeclarativeBase,
-    ) -> Any:
-        """Query to see if the object is in the db
+        obj: Union[DeclarativeBase, Iterable[DeclarativeBase]],
+        load: bool = True,
+        options: Optional[Sequence[ORMOption]] = None,
+        commit: bool = False,
+        flush: bool = False,
+        refresh: bool = False,
+    ):
+        if any(key is None for key in obj._key_vals):
+            self.attach_keys(obj)
+        self.merge(obj, load=load, options=options)
+        if commit or flush or refresh:
+            self._commit_flush_refresh(commit, flush, refresh)
+        return obj
 
-        Args:
-            obj (DeclarativeBase): valid db obj
-
-        Returns:
-            Any or None: id/ids (primary key/s values) of the object or None
-        """
-        return self.find_keys(obj, obj._log_vals)
-
-    def lget(
-        self, obj_class: Type[DeclarativeBase], values: Union[Any, Iterable[Any]]
-    ) -> DeclarativeBase:
-        """Query to see if the object is in the db based on the logical keys
-
-        Args:
-            obj (Type[DeclarativeBase]): valid db obj
-
-        Returns:
-            DeclarativeBase Instance or None: The object with the given keys or None
-        """
-        if not isinstance(values, CollectionsIterable):
-            values = [values]
-        if not obj_class._log_columns:
-            raise Exception(
-                f"Error! No logical_key columns were specified for class '{obj_class}'"
-            )
-        stmt = select(obj_class).where(*_eq_filter(obj_class._log_columns, values))
-        # print(stmt)
-        try:
-            return self.scalars(stmt).one_or_none()
-        except Exception as e:
-            e.add_note(
-                f"stmt={stmt}\nobj._log_columns={obj_class._log_columns}, "
-                f"obj._log_vals={values}, "
-            )
-            raise
+    def linsert_update_all(
+        self,
+        objs: Iterable[DeclarativeBase],
+        load: bool = True,
+        options: Optional[Sequence[ORMOption]] = None,
+        commit: bool = False,
+        flush: bool = False,
+        refresh: bool = False,
+    ):
+        pass
+        # if any(key is None for key in obj._key_vals):
+        #     self.attach_keys(obj)
+        # self.merge(obj, load=load, options=options)
+        # if commit or flush or refresh:
+        #     self._commit_flush_refresh(commit, flush, refresh)
+        # return obj
 
 
 class extended_sessionmaker(sessionmaker):
@@ -446,14 +574,18 @@ class extended_sessionmaker(sessionmaker):
         """
 
         # fmt: off
+        session.attach_keys = partial(SessionExtensions.attach_keys, session)
+        session.attach_keys_all = partial(SessionExtensions.attach_keys_all, session)
         session.count = partial(SessionExtensions.count, session)
+        session.find_keys = partial(SessionExtensions.find_keys, session)
+        session.find_keys_all = partial(SessionExtensions.find_keys_all, session)
         session.insert_ignore = partial(SessionExtensions.insert_ignore, session)
         session.insert_ignore_all = partial(SessionExtensions.insert_ignore_all, session)
-        session.find_keys = partial(SessionExtensions.find_keys, session)
         session.lexists = partial(SessionExtensions.lexists, session)
+        session.lget = partial(SessionExtensions.lget, session)
         session.linsert_ignore = partial(SessionExtensions.linsert_ignore, session)
         session.linsert_ignore_all = partial(SessionExtensions.linsert_ignore_all, session)
-        session.lget = partial(SessionExtensions.lget, session)
+        session.linsert_update = partial(SessionExtensions.linsert_update, session)
         session._handle_relationships = partial(SessionExtensions._handle_relationships, session)
         session._commit_flush_refresh = partial(SessionExtensions._commit_flush_refresh, session)
         # fmt: on
